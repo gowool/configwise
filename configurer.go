@@ -72,11 +72,11 @@ type Configurer interface {
 type Option func(*configurer)
 
 type configurer struct {
-	viper     *viper.Viper
-	path      string
-	prefix    string
-	tp        string
-	readInCfg []byte
+	viper        *viper.Viper
+	configName   string
+	configType   string
+	readInConfig []byte
+	configMap    map[string]interface{}
 	// user defined Flags in the form of <option>.<key> = <value>
 	// which overwrites initial config key
 	flags []string
@@ -84,25 +84,42 @@ type configurer struct {
 
 func WithPath(path string) Option {
 	return func(c *configurer) {
-		c.path = path
+		c.viper.AddConfigPath(path)
+	}
+}
+
+func WithName(name string) Option {
+	return func(c *configurer) {
+		if ext := filepath.Ext(name); ext != "" {
+			c.configName = strings.TrimSuffix(name, ext)
+			c.configType = ext[1:]
+		} else {
+			c.configName = name
+		}
 	}
 }
 
 func WithPrefix(prefix string) Option {
 	return func(c *configurer) {
-		c.prefix = prefix
+		c.viper.SetEnvPrefix(prefix)
 	}
 }
 
-func WithConfigType(tp string) Option {
+func WithType(configType string) Option {
 	return func(c *configurer) {
-		c.tp = tp
+		c.configType = configType
 	}
 }
 
-func WithReadInCfg(readInCfg []byte) Option {
+func WithReadInConfig(readInConfig []byte) Option {
 	return func(c *configurer) {
-		c.readInCfg = readInCfg
+		c.readInConfig = readInConfig
+	}
+}
+
+func WithConfigMap(configMap map[string]interface{}) Option {
+	return func(c *configurer) {
+		c.configMap = configMap
 	}
 }
 
@@ -113,43 +130,35 @@ func WithFlags(flags []string) Option {
 }
 
 func NewConfigurer(options ...Option) (Configurer, error) {
-	c := &configurer{viper: viper.New()}
+	c := &configurer{
+		viper:      viper.New(),
+		configName: "config",
+		configType: "yaml",
+	}
+
+	c.viper.AutomaticEnv()
+	c.viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 
 	for _, opt := range options {
 		opt(c)
 	}
 
-	// If user provided []byte data with config, read it and ignore Path and Prefix
-	if c.readInCfg != nil && c.tp != "" {
-		c.viper.SetConfigType(c.tp)
-		err := c.viper.ReadConfig(bytes.NewBuffer(c.readInCfg))
-		return c, err
-	}
+	c.viper.SetConfigType(c.configType)
+	c.viper.SetConfigFile(c.configName + "." + c.configType)
 
-	// read in environment variables that match
-	c.viper.AutomaticEnv()
-	if c.prefix == "" {
-		return nil, fmt.Errorf("%s prefix should be set", OpNew)
-	}
-
-	c.viper.SetEnvPrefix(c.prefix)
-	c.viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
-
-	if c.path == "" {
-		ex, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("%s %w", OpNew, err)
+	if c.configMap != nil {
+		if err := c.viper.MergeConfigMap(c.configMap); err != nil {
+			return nil, err
 		}
-		c.viper.AddConfigPath(filepath.Dir(ex))
-		c.viper.AddConfigPath(filepath.Join("/", "etc", filepath.Base(ex)))
-	} else {
-		c.viper.SetConfigFile(c.path)
 	}
 
-	err := c.viper.ReadInConfig()
-	if err != nil {
-		return nil, fmt.Errorf("%s %w", OpNew, err)
+	if c.readInConfig != nil {
+		if err := c.viper.ReadConfig(bytes.NewBuffer(c.readInConfig)); err != nil {
+			return nil, err
+		}
 	}
+
+	_ = c.viper.ReadInConfig()
 
 	// automatically inject ENV variables using ${ENV} pattern
 	for _, key := range c.viper.AllKeys() {
